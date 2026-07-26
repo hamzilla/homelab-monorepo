@@ -96,14 +96,16 @@ cmd_ls() {
     fi
 
     # Print directories
-    for d in "${dirs[@]}"; do
+    for d in "${dirs[@]+"${dirs[@]}"}"; do
+        [[ -z "$d" ]] && continue
         local count
         count=$(rclone ls "${rc}/${d}" 2>/dev/null | wc -l | tr -d ' ')
         printf "  \033[1;34m%-40s\033[0m  %s items\n" "${d}/" "$count"
     done
 
     # Print files
-    for line in "${files[@]}"; do
+    for line in "${files[@]+"${files[@]}"}"; do
+        [[ -z "$line" ]] && continue
         local size name
         size=$(echo "$line" | awk '{print $1}')
         name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
@@ -215,7 +217,8 @@ cmd_find() {
     echo "Found ${#results[@]} match(es) for '${pattern}':"
     echo ""
     local shown=0
-    for line in "${results[@]}"; do
+    for line in "${results[@]+"${results[@]}"}"; do
+        [[ -z "$line" ]] && continue
         ((shown >= 100)) && echo "  ... and $((${#results[@]} - 100)) more" && break
         local size name
         size=$(echo "$line" | awk '{print $1}')
