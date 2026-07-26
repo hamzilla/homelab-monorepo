@@ -16,6 +16,7 @@ EXCLUDES=(
     "--exclude" "Thumbs.db"
     "--exclude" "._*"
     "--exclude" ".AppleDouble"
+    "--exclude" "@eaDir/**"
 )
 
 log() {
