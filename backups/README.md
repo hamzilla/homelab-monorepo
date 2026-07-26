@@ -35,7 +35,7 @@ Backblaze credentials are stored in **1Password**:
 `backup.sh` syncs both photo directories to B2 with client-side encryption.
 
 - **Schedule:** Midnight (Synology Task Scheduler)
-- **Log:** `/var/log/b2-photo-backup.log`
+- **Log:** `/var/log/hamzilla-services/b2-photo-backup.log`
 - **Excludes:** `.DS_Store`, `Thumbs.db`, `._*`, `.AppleDouble`
 
 To run manually:

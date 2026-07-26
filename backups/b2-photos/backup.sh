@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG_FILE="/var/log/b2-photo-backup.log"
+LOG_DIR="/var/log/hamzilla-services"
+LOG_FILE="$LOG_DIR/b2-photo-backup.log"
 TRANSFERS=4
 CHECKERS=8
 
@@ -26,6 +27,8 @@ log() {
 error() { log "[ERROR] $*"; }
 
 # --- Preflight ---
+mkdir -p "$LOG_DIR"
+
 if ! command -v rclone &>/dev/null; then
     error "rclone not found. Run setup.sh first."
     exit 1
