@@ -68,9 +68,20 @@ resolve_path() {
 }
 
 cmd_ls() {
-    local target="${1:-}"
+    local long=false
+    local target=""
+
+    # Parse args: -l for long format
+    for arg in "$@"; do
+        if [[ "$arg" == "-l" ]]; then
+            long=true
+        elif [[ "$arg" != "." ]]; then
+            target="$arg"
+        fi
+    done
+
     local rc
-    if [[ -n "$target" && "$target" != "." ]]; then
+    if [[ -n "$target" ]]; then
         local resolved
         resolved=$(resolve_path "$target")
         rc="b2crypt:${resolved}"
@@ -98,9 +109,13 @@ cmd_ls() {
     # Print directories
     for d in "${dirs[@]+"${dirs[@]}"}"; do
         [[ -z "$d" ]] && continue
-        local count
-        count=$(rclone ls "${rc}/${d}" 2>/dev/null | wc -l | tr -d ' ')
-        printf "  \033[1;34m%-40s\033[0m  %s items\n" "${d}/" "$count"
+        if $long; then
+            local count
+            count=$(rclone ls "${rc}/${d}" 2>/dev/null | wc -l | tr -d ' ')
+            printf "  \033[1;34m%-40s\033[0m  %s items\n" "${d}/" "$count"
+        else
+            printf "  \033[1;34m%s/\033[0m\n" "$d"
+        fi
     done
 
     # Print files
@@ -109,7 +124,11 @@ cmd_ls() {
         local size name
         size=$(echo "$line" | awk '{print $1}')
         name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
-        printf "  %-40s  %s\n" "$name" "$(human_size "$size")"
+        if $long; then
+            printf "  %-40s  %s\n" "$name" "$(human_size "$size")"
+        else
+            printf "  %s\n" "$name"
+        fi
     done
 }
 
@@ -270,7 +289,7 @@ cmd_help() {
 
   NAVIGATE
   ────────
-  ls [path]         List directory contents
+  ls [-l] [path]     List directory contents (fast: names only, -l: with sizes/counts)
   cd <path>         Change directory (.. to go back, / for root)
   pwd               Show current path
   tree [path]       Show directory tree
@@ -333,7 +352,7 @@ shell() {
 
         case "$cmd" in
             ls)
-                cmd_ls "$args"
+                cmd_ls $args
                 ;;
             cd)
                 if [[ -z "$args" ]]; then
