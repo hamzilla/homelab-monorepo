@@ -193,14 +193,14 @@ cmd_get() {
         return
     fi
 
-    # Check if it's a file
+    # Check if it's a file (exact match via lsf)
     local dir
     dir=$(dirname "$resolved")
     local base
     base=$(basename "$resolved")
     local parent_rc="b2crypt:${dir}"
 
-    if rclone lsl "$parent_rc" --max-depth 1 2>/dev/null | grep -q "$base"; then
+    if rclone lsf "$parent_rc" --files-only 2>/dev/null | grep -qxF "$base"; then
         local dest="${RESTORE_DIR}/${resolved}"
         mkdir -p "$(dirname "$dest")"
         info "Downloading ${rc} -> ${dest}"
@@ -421,7 +421,9 @@ shell() {
 list_top_level() {
     echo ""
     echo "=== Buckets in b2crypt: ==="
-    rclone lsd b2crypt: 2>/dev/null | awk '{print "  " $NF}'
+    rclone lsf b2crypt: --dirs-only 2>/dev/null | sed 's|/$||' | while IFS= read -r d; do
+        printf "  %s\n" "$d"
+    done
     echo ""
 }
 
