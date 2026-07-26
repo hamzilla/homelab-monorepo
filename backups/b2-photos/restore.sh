@@ -144,7 +144,7 @@ cmd_pwd() {
 cmd_get() {
     local input="$1"
 
-    if [[ "$input" == "." ]]; then
+    if [[ "$input" == "." || "$input" == "*" ]]; then
         # Download current directory
         local rc=$(rc_path)
         local dest="${RESTORE_DIR}/${CURRENT_PATH}"
@@ -186,6 +186,15 @@ cmd_get() {
     fi
 
     error "Not found: ${input}"
+}
+
+cmd_getall() {
+    local rc=$(rc_path)
+    local dest="${RESTORE_DIR}/${CURRENT_PATH}"
+    mkdir -p "$dest"
+    info "Downloading ALL from ${rc}/ -> ${dest}/"
+    rclone copy "$rc" "$dest" --transfers 4 --progress
+    info "Download complete: ${dest}/"
 }
 
 cmd_find() {
@@ -256,35 +265,36 @@ cmd_du() {
 cmd_help() {
     cat <<EOF
 
-Commands:
-  ls [path]         List directory contents (default: current)
-  cd <path>         Change directory (supports .. and /)
-  pwd               Print current directory
-  get <name>        Download a file or folder (use "." for current dir)
-  find <pattern>    Search for files by name pattern
+  NAVIGATE
+  ────────
+  ls [path]         List directory contents
+  cd <path>         Change directory (.. to go back, / for root)
+  pwd               Show current path
   tree [path]       Show directory tree
   du [path]         Show size summary
-  setdir <path>     Change local restore directory
+
+  DOWNLOAD
+  ────────
+  get <name>        Download a file or folder by name
+  get .             Download everything in current directory
+  getall            Same as get .
+  download-all      Download EVERYTHING from root
+  find <pattern>    Search for files, then get them by path
+
+  OTHER
+  ─────
+  setdir <path>     Change where files are saved (default: ./restored)
   help              Show this help
-  quit / exit       Exit the shell
+  quit              Exit
 
-Path shortcuts:
-  ..                Parent directory
-  /                 Root directory
-  ~                 Root directory
-  .                 Current directory
-
-Examples:
-  ls
-  cd hamzilla-photos
-  cd 2024/vacation
-  cd ..
-  get vacation-photos
-  get photo.jpg
-  get .               (download everything in current dir)
-  find .jpg
-  tree
-  du
+  Examples:
+    cd hamzilla-photos/2024/vacation   # navigate to a folder
+    ls                                  # see what's here
+    get IMG_001.jpg                    # download one file
+    get vacation                        # download a whole folder
+    get .                               # download everything here
+    download-all                        # download everything in bucket
+    find .jpg                           # find all jpgs anywhere
 
 EOF
 }
@@ -292,7 +302,16 @@ EOF
 shell() {
     echo ""
     echo "B2 Photo Restore Shell"
-    echo "Type 'help' for commands, 'quit' to exit"
+    echo "────────────────────────────────────────────"
+    echo "Navigate your encrypted backups, download what you need."
+    echo ""
+    echo "Quick start:"
+    echo "  ls            See what's in the bucket"
+    echo "  cd <folder>   Navigate into a folder"
+    echo "  get <name>    Download a file or folder"
+    echo "  get .         Download everything in current dir"
+    echo "  download-all  Download everything from root"
+    echo "  help          All commands"
     echo ""
 
     while true; do
@@ -329,6 +348,13 @@ shell() {
                 else
                     cmd_get "$args"
                 fi
+                ;;
+            getall)
+                cmd_getall
+                ;;
+            download-all|downloadall)
+                CURRENT_PATH=""
+                cmd_getall
                 ;;
             find)
                 if [[ -z "$args" ]]; then
@@ -417,22 +443,25 @@ show_usage() {
     cat <<EOF
 Usage: $(basename "$0") [command] [args]
 
-Commands:
-  shell                       Interactive filesystem shell (default)
+Browse & Navigate:
+  shell                       Interactive shell (default, no args)
   list                        List top-level folders
-  browse <folder>             Browse a folder (one-shot)
-  search <pattern>            Search for files by name
-  download-folder <folder>    Download an entire folder
-  download-file <path>        Download a single file
+  browse <folder>             Show contents of a folder
+  search <pattern>            Find files by name
+
+Download:
   download-all                Download everything
+  download-folder <folder>    Download a folder
+  download-file <path>        Download a single file
 
 Examples:
-  $(basename "$0")                          # start interactive shell
+  $(basename "$0")                              # start interactive shell
   $(basename "$0") list
   $(basename "$0") browse hamzilla-photos
   $(basename "$0") search ".jpg"
+  $(basename "$0") download-all
   $(basename "$0") download-folder hamzilla-photos/2024
-  $(basename "$0") download-file hamzilla-photos/2024/photo.jpg
+  $(basename "$0") download-file hamzilla-photos/2024/vacation/photo.jpg
 EOF
 }
 
