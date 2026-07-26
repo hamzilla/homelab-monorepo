@@ -71,14 +71,16 @@ cmd_ls() {
     local long=false
     local target=""
 
-    # Parse args: -l for long format
-    for arg in "$@"; do
-        if [[ "$arg" == "-l" ]]; then
-            long=true
-        elif [[ "$arg" != "." ]]; then
-            target="$arg"
-        fi
-    done
+    # Parse args from raw string: -l flag and target path
+    local raw="$*"
+    if [[ "$raw" == -l\ * ]]; then
+        long=true
+        target="${raw#-l }"
+    elif [[ "$raw" == "-l" ]]; then
+        long=true
+    elif [[ -n "$raw" && "$raw" != "." ]]; then
+        target="$raw"
+    fi
 
     # Strip trailing slash from target
     target="${target%/}"
@@ -355,7 +357,7 @@ shell() {
 
         case "$cmd" in
             ls)
-                cmd_ls $args
+                cmd_ls "$args"
                 ;;
             cd)
                 if [[ -z "$args" ]]; then
