@@ -1,0 +1,10 @@
+[b2]
+type = b2
+account = YOUR_BACKBLAZE_KEY_ID
+key = YOUR_BACKBLAZE_APP_KEY
+
+[b2crypt]
+type = crypt
+remote = b2:hamzilla-backups
+password = YOUR_ENCRYPTED_PASSWORD
+password2 = YOUR_ENCRYPTED_SALT

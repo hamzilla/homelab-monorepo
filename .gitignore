@@ -1,0 +1,13 @@
+# rclone config (contains credentials)
+rclone.conf
+rclone.conf.bak
+
+# Restored files
+restored/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
