@@ -93,7 +93,7 @@ cmd_ls() {
     local dirs=()
     while IFS= read -r d; do
         [[ -n "$d" ]] && dirs+=("$d")
-    done < <(rclone lsd "$rc" 2>/dev/null | awk '{print $NF}')
+    done < <(rclone lsd "$rc" 2>/dev/null | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
 
     # Get files with sizes
     local files=()
