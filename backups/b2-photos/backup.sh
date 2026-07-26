@@ -2,7 +2,7 @@
 set -euo pipefail
 
 LOG_DIR="/var/log/hamzilla-services"
-LOG_FILE="$LOG_DIR/b2-photo-backup.log"
+LOG_FILE="$LOG_DIR/b2-photo-backup-$(date '+%Y-%m-%d').log"
 TRANSFERS=4
 CHECKERS=8
 

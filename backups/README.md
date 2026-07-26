@@ -9,7 +9,7 @@ Encrypted nightly backup of Synology photos to Backblaze B2, with an interactive
 - Client-side encryption (rclone crypt) — filenames and contents encrypted before upload
 - Syncs two photo directories: `hamzilla/Photos/` and `salwabalwa/Photos/`
 - Excludes `.DS_Store`, `Thumbs.db`, `._*`, `.AppleDouble`
-- Logs to `/var/log/hamzilla-services/b2-photo-backup.log`
+- Logs to `/var/log/hamzilla-services/b2-photo-backup-YYYY-MM-DD.log` (one per day)
 
 **Restore**
 - Interactive filesystem shell — navigate encrypted backups like a local directory
