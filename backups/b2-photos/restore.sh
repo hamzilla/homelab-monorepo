@@ -80,6 +80,9 @@ cmd_ls() {
         fi
     done
 
+    # Strip trailing slash from target
+    target="${target%/}"
+
     local rc
     if [[ -n "$target" ]]; then
         local resolved
@@ -89,19 +92,19 @@ cmd_ls() {
         rc=$(rc_path)
     fi
 
-    # Get directories
+    # Get directories (use lsf for reliable name parsing)
     local dirs=()
     while IFS= read -r d; do
         [[ -n "$d" ]] && dirs+=("$d")
-    done < <(rclone lsd "$rc" 2>/dev/null | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
+    done < <(rclone lsf "$rc" --dirs-only 2>/dev/null | sed 's|/$||')
 
     # Get files with sizes
-    local files=()
+    local files_raw=()
     while IFS= read -r line; do
-        [[ -n "$line" ]] && files+=("$line")
+        [[ -n "$line" ]] && files_raw+=("$line")
     done < <(rclone lsl "$rc" --max-depth 1 2>/dev/null | grep -v '/$' || true)
 
-    if [[ ${#dirs[@]} -eq 0 && ${#files[@]} -eq 0 ]]; then
+    if [[ ${#dirs[@]} -eq 0 && ${#files_raw[@]} -eq 0 ]]; then
         echo "(empty)"
         return
     fi
@@ -119,11 +122,11 @@ cmd_ls() {
     done
 
     # Print files
-    for line in "${files[@]+"${files[@]}"}"; do
+    for line in "${files_raw[@]+"${files_raw[@]}"}"; do
         [[ -z "$line" ]] && continue
         local size name
         size=$(echo "$line" | awk '{print $1}')
-        name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
+        name=$(echo "$line" | cut -d' ' -f4-)
         if $long; then
             printf "  %-40s  %s\n" "$name" "$(human_size "$size")"
         else
@@ -241,7 +244,7 @@ cmd_find() {
         ((shown >= 100)) && echo "  ... and $((${#results[@]} - 100)) more" && break
         local size name
         size=$(echo "$line" | awk '{print $1}')
-        name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
+        name=$(echo "$line" | cut -d' ' -f4-)
         printf "  %8s  %s\n" "$(human_size "$size")" "$name"
         ((shown++))
     done
