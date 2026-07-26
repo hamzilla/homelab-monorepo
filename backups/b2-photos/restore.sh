@@ -2,6 +2,7 @@
 set -euo pipefail
 
 RESTORE_DIR="./restored"
+CURRENT_PATH=""
 
 info() { echo "[INFO] $*"; }
 error() { echo "[ERROR] $*" >&2; }
@@ -20,15 +21,351 @@ check_rclone() {
 human_size() {
     local bytes=$1
     if (( bytes >= 1073741824 )); then
-        printf "%.1f GB" "$(echo "$bytes / 1073741824" | bc -l)"
+        printf "%.1fG" "$(echo "$bytes / 1073741824" | bc -l)"
     elif (( bytes >= 1048576 )); then
-        printf "%.1f MB" "$(echo "$bytes / 1048576" | bc -l)"
+        printf "%.1fM" "$(echo "$bytes / 1048576" | bc -l)"
     elif (( bytes >= 1024 )); then
-        printf "%.1f KB" "$(echo "$bytes / 1024" | bc -l)"
+        printf "%.1fK" "$(echo "$bytes / 1024" | bc -l)"
     else
-        printf "%d B" "$bytes"
+        printf "%dB" "$bytes"
     fi
 }
+
+# Build rclone path from current path
+rc_path() {
+    if [[ -n "$CURRENT_PATH" ]]; then
+        echo "b2crypt:${CURRENT_PATH}"
+    else
+        echo "b2crypt:"
+    fi
+}
+
+# Resolve a user-supplied path relative to current
+resolve_path() {
+    local input="$1"
+    local path="$CURRENT_PATH"
+
+    # Handle absolute paths
+    if [[ "$input" == /* ]]; then
+        path="${input#/}"
+        path="${path%/}"
+        echo "$path"
+        return
+    fi
+
+    # Handle relative paths with ../
+    IFS='/' read -ra parts <<< "$input"
+    for part in "${parts[@]}"; do
+        [[ -z "$part" ]] && continue
+        if [[ "$part" == ".." ]]; then
+            path="${path%/*}"
+        elif [[ "$part" != "." ]]; then
+            [[ -n "$path" ]] && path="${path}/${part}" || path="$part"
+        fi
+    done
+
+    echo "$path"
+}
+
+cmd_ls() {
+    local target="${1:-}"
+    local rc
+    if [[ -n "$target" && "$target" != "." ]]; then
+        local resolved
+        resolved=$(resolve_path "$target")
+        rc="b2crypt:${resolved}"
+    else
+        rc=$(rc_path)
+    fi
+
+    # Get directories
+    local dirs=()
+    while IFS= read -r d; do
+        [[ -n "$d" ]] && dirs+=("$d")
+    done < <(rclone lsd "$rc" 2>/dev/null | awk '{print $NF}')
+
+    # Get files with sizes
+    local files=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && files+=("$line")
+    done < <(rclone lsl "$rc" --max-depth 1 2>/dev/null | grep -v '/$' || true)
+
+    if [[ ${#dirs[@]} -eq 0 && ${#files[@]} -eq 0 ]]; then
+        echo "(empty)"
+        return
+    fi
+
+    # Print directories
+    for d in "${dirs[@]}"; do
+        local count
+        count=$(rclone ls "${rc}/${d}" 2>/dev/null | wc -l | tr -d ' ')
+        printf "  \033[1;34m%-40s\033[0m  %s items\n" "${d}/" "$count"
+    done
+
+    # Print files
+    for line in "${files[@]}"; do
+        local size name
+        size=$(echo "$line" | awk '{print $1}')
+        name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
+        printf "  %-40s  %s\n" "$name" "$(human_size "$size")"
+    done
+}
+
+cmd_cd() {
+    local input="$1"
+
+    if [[ "$input" == "/" || "$input" == "~" ]]; then
+        CURRENT_PATH=""
+        return
+    fi
+
+    local resolved
+    resolved=$(resolve_path "$input")
+
+    # Verify the path exists
+    if [[ -n "$resolved" ]]; then
+        if ! rclone lsd "b2crypt:${resolved}" &>/dev/null; then
+            error "Not a directory: ${input}"
+            return 1
+        fi
+    fi
+
+    CURRENT_PATH="$resolved"
+}
+
+cmd_pwd() {
+    if [[ -n "$CURRENT_PATH" ]]; then
+        echo "/${CURRENT_PATH}"
+    else
+        echo "/"
+    fi
+}
+
+cmd_get() {
+    local input="$1"
+
+    if [[ "$input" == "." ]]; then
+        # Download current directory
+        local rc=$(rc_path)
+        local dest="${RESTORE_DIR}/${CURRENT_PATH}"
+        mkdir -p "$dest"
+        info "Downloading ${rc}/ -> ${dest}/"
+        rclone copy "$rc" "$dest" --transfers 4 --progress
+        info "Download complete: ${dest}/"
+        return
+    fi
+
+    local resolved
+    resolved=$(resolve_path "$input")
+    local rc="b2crypt:${resolved}"
+
+    # Check if it's a directory
+    if rclone lsd "$rc" &>/dev/null 2>&1; then
+        local dest="${RESTORE_DIR}/${resolved}"
+        mkdir -p "$dest"
+        info "Downloading ${rc}/ -> ${dest}/"
+        rclone copy "$rc" "$dest" --transfers 4 --progress
+        info "Download complete: ${dest}/"
+        return
+    fi
+
+    # Check if it's a file
+    local dir
+    dir=$(dirname "$resolved")
+    local base
+    base=$(basename "$resolved")
+    local parent_rc="b2crypt:${dir}"
+
+    if rclone lsl "$parent_rc" --max-depth 1 2>/dev/null | grep -q "$base"; then
+        local dest="${RESTORE_DIR}/${resolved}"
+        mkdir -p "$(dirname "$dest")"
+        info "Downloading ${rc} -> ${dest}"
+        rclone copyto "$rc" "$dest" --progress
+        info "Download complete."
+        return
+    fi
+
+    error "Not found: ${input}"
+}
+
+cmd_find() {
+    local pattern="$1"
+    local rc=$(rc_path)
+
+    echo ""
+    local results=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && results+=("$line")
+    done < <(rclone lsl "$rc" --include "*${pattern}*" 2>/dev/null || true)
+
+    if [[ ${#results[@]} -eq 0 ]]; then
+        echo "No matches for '${pattern}'"
+        return
+    fi
+
+    echo "Found ${#results[@]} match(es) for '${pattern}':"
+    echo ""
+    local shown=0
+    for line in "${results[@]}"; do
+        ((shown >= 100)) && echo "  ... and $((${#results[@]} - 100)) more" && break
+        local size name
+        size=$(echo "$line" | awk '{print $1}')
+        name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
+        printf "  %8s  %s\n" "$(human_size "$size")" "$name"
+        ((shown++))
+    done
+}
+
+cmd_tree() {
+    local target="${1:-}"
+    local rc
+    if [[ -n "$target" && "$target" != "." ]]; then
+        local resolved
+        resolved=$(resolve_path "$target")
+        rc="b2crypt:${resolved}"
+    else
+        rc=$(rc_path)
+    fi
+
+    echo ""
+    rclone tree "$rc" --dirsfirst 2>/dev/null | head -100
+    local total
+    total=$(rclone tree "$rc" 2>/dev/null | wc -l | tr -d ' ')
+    if (( total > 100 )); then
+        echo "... ($((total - 100)) more entries)"
+    fi
+    echo ""
+}
+
+cmd_du() {
+    local target="${1:-}"
+    local rc
+    if [[ -n "$target" && "$target" != "." ]]; then
+        local resolved
+        resolved=$(resolve_path "$target")
+        rc="b2crypt:${resolved}"
+    else
+        rc=$(rc_path)
+    fi
+
+    echo ""
+    rclone size "$rc" 2>/dev/null
+    echo ""
+}
+
+cmd_help() {
+    cat <<EOF
+
+Commands:
+  ls [path]         List directory contents (default: current)
+  cd <path>         Change directory (supports .. and /)
+  pwd               Print current directory
+  get <name>        Download a file or folder (use "." for current dir)
+  find <pattern>    Search for files by name pattern
+  tree [path]       Show directory tree
+  du [path]         Show size summary
+  setdir <path>     Change local restore directory
+  help              Show this help
+  quit / exit       Exit the shell
+
+Path shortcuts:
+  ..                Parent directory
+  /                 Root directory
+  ~                 Root directory
+  .                 Current directory
+
+Examples:
+  ls
+  cd hamzilla-photos
+  cd 2024/vacation
+  cd ..
+  get vacation-photos
+  get photo.jpg
+  get .               (download everything in current dir)
+  find .jpg
+  tree
+  du
+
+EOF
+}
+
+shell() {
+    echo ""
+    echo "B2 Photo Restore Shell"
+    echo "Type 'help' for commands, 'quit' to exit"
+    echo ""
+
+    while true; do
+        local display_path="${CURRENT_PATH:-/}"
+        printf "\033[1;32mb2crypt:\033[1;34m%s\033[0m \$ " "$display_path"
+        read -r input
+
+        # Skip empty input
+        [[ -z "$input" ]] && continue
+
+        # Parse command and args
+        local cmd args
+        cmd=$(echo "$input" | awk '{print $1}')
+        args=$(echo "$input" | cut -d' ' -f2-)
+        [[ "$args" == "$cmd" ]] && args=""
+
+        case "$cmd" in
+            ls)
+                cmd_ls "$args"
+                ;;
+            cd)
+                if [[ -z "$args" ]]; then
+                    error "Usage: cd <path>"
+                else
+                    cmd_cd "$args"
+                fi
+                ;;
+            pwd)
+                cmd_pwd
+                ;;
+            get)
+                if [[ -z "$args" ]]; then
+                    error "Usage: get <name|path|.>"
+                else
+                    cmd_get "$args"
+                fi
+                ;;
+            find)
+                if [[ -z "$args" ]]; then
+                    error "Usage: find <pattern>"
+                else
+                    cmd_find "$args"
+                fi
+                ;;
+            tree)
+                cmd_tree "$args"
+                ;;
+            du)
+                cmd_du "$args"
+                ;;
+            setdir)
+                if [[ -z "$args" ]]; then
+                    echo "Restore directory: ${RESTORE_DIR}"
+                else
+                    RESTORE_DIR="$args"
+                    info "Restore directory set to: ${RESTORE_DIR}"
+                fi
+                ;;
+            help)
+                cmd_help
+                ;;
+            quit|exit)
+                echo "Bye."
+                return
+                ;;
+            *)
+                error "Unknown command: ${cmd}. Type 'help' for usage."
+                ;;
+        esac
+    done
+}
+
+# --- One-shot commands ---
 
 list_top_level() {
     echo ""
@@ -39,200 +376,15 @@ list_top_level() {
 
 browse_folder() {
     local folder="$1"
-    local path="${folder}"
-    [[ "$path" == */ ]] && path="${path%/}"
-
-    echo ""
-    echo "=== b2crypt:${path}/ ==="
-    echo ""
-
-    # Get subdirectories
-    local dirs
-    dirs=$(rclone lsd "b2crypt:${path}" 2>/dev/null | awk '{print $NF}' || true)
-
-    # Get files with sizes
-    local files
-    files=$(rclone lsl "b2crypt:${path}" --max-depth 1 2>/dev/null | grep -v '/$' || true)
-
-    if [[ -n "$dirs" ]]; then
-        echo "  FOLDERS:"
-        while IFS= read -r d; do
-            [[ -z "$d" ]] && continue
-            local count
-            count=$(rclone ls "b2crypt:${path}/${d}" 2>/dev/null | wc -l | tr -d ' ')
-            echo "    ${d}/  (${count} items)"
-        done <<< "$dirs"
-        echo ""
-    fi
-
-    if [[ -n "$files" ]]; then
-        echo "  FILES:"
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            local size name
-            size=$(echo "$line" | awk '{print $1}')
-            name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
-            echo "    $(human_size "$size")  ${name}"
-        done <<< "$files" | head -50
-        local file_count
-        file_count=$(echo "$files" | wc -l | tr -d ' ')
-        if (( file_count > 50 )); then
-            echo "    ... and $((file_count - 50)) more files"
-        fi
-        echo ""
-    fi
-
-    if [[ -z "$dirs" && -z "$files" ]]; then
-        echo "  (empty)"
-        echo ""
-    fi
-}
-
-browse_interactive() {
-    local current="${1:-}"
-    while true; do
-        local display_path="${current:-<root>}"
-        echo ""
-        echo "=== b2crypt:${current:+${current}/} ==="
-        echo ""
-
-        # Get subdirectories
-        local dirs=()
-        if [[ -n "$current" ]]; then
-            while IFS= read -r d; do
-                [[ -n "$d" ]] && dirs+=("$d")
-            done < <(rclone lsd "b2crypt:${current}" 2>/dev/null | awk '{print $NF}')
-        else
-            while IFS= read -r d; do
-                [[ -n "$d" ]] && dirs+=("$d")
-            done < <(rclone lsd b2crypt: 2>/dev/null | awk '{print $NF}')
-        fi
-
-        # Get files
-        local files=()
-        local cmd="rclone lsl b2crypt:${current} --max-depth 1 2>/dev/null"
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && files+=("$line")
-        done < <(eval "$cmd" | grep -v '/$' || true)
-
-        # Display directories
-        local idx=1
-        if [[ ${#dirs[@]} -gt 0 ]]; then
-            echo "  FOLDERS:"
-            for d in "${dirs[@]}"; do
-                local count
-                count=$(rclone ls "b2crypt:${current:+${current}/}${d}" 2>/dev/null | wc -l | tr -d ' ')
-                printf "    %2d) %s/  (%s items)\n" "$idx" "$d" "$count"
-                ((idx++))
-            done
-            echo ""
-        fi
-
-        # Display files
-        if [[ ${#files[@]} -gt 0 ]]; then
-            echo "  FILES:"
-            local shown=0
-            for line in "${files[@]}"; do
-                ((shown >= 50)) && break
-                local size name
-                size=$(echo "$line" | awk '{print $1}')
-                name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
-                printf "    %2d) %s  %s\n" "$idx" "$(human_size "$size")" "$name"
-                ((idx++))
-                ((shown++))
-            done
-            if [[ ${#files[@]} -gt 50 ]]; then
-                echo "    ... and $((${#files[@]} - 50)) more files"
-            fi
-            echo ""
-        fi
-
-        if [[ ${#dirs[@]} -eq 0 && ${#files[@]} -eq 0 ]]; then
-            echo "  (empty)"
-            echo ""
-        fi
-
-        # Navigation prompt
-        echo "  Commands: [number] open folder, [d <num>] download file, [b] back, [q] quit"
-        echo ""
-        read -rp "  > " input
-
-        case "$input" in
-            b|B)
-                if [[ -n "$current" ]]; then
-                    current="${current%/*}"
-                else
-                    return
-                fi
-                ;;
-            q|Q)
-                return
-                ;;
-            d)
-                read -rp "  File number: " fnum
-                local file_idx=$((fnum - ${#dirs[@]}))
-                if (( file_idx >= 1 && file_idx <= ${#files[@]} )); then
-                    local fname
-                    fname=$(echo "${files[$((file_idx-1))]}" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
-                    local fpath="${current:+${current}/}${fname}"
-                    download_file "$fpath"
-                else
-                    error "Invalid file number."
-                fi
-                ;;
-            [0-9]*)
-                if (( input >= 1 && input <= ${#dirs[@]} )); then
-                    local selected="${dirs[$((input-1))]}"
-                    current="${current:+${current}/}${selected}"
-                elif (( input > ${#dirs[@]} && input < idx )); then
-                    local file_idx=$((input - ${#dirs[@]}))
-                    local fname
-                    fname=$(echo "${files[$((file_idx-1))]}" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
-                    local fpath="${current:+${current}/}${fname}"
-                    download_file "$fpath"
-                else
-                    error "Invalid selection."
-                fi
-                ;;
-            *)
-                error "Invalid input."
-                ;;
-        esac
-    done
+    local saved_path="$CURRENT_PATH"
+    CURRENT_PATH="$folder"
+    cmd_ls
+    CURRENT_PATH="$saved_path"
 }
 
 search_files() {
-    local pattern="$1"
-    echo ""
-    echo "=== Searching for '${pattern}' ==="
-    echo ""
-
-    local results=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && results+=("$line")
-    done < <(rclone lsl b2crypt: --include "*${pattern}*" 2>/dev/null || true)
-
-    if [[ ${#results[@]} -eq 0 ]]; then
-        echo "  No matches found."
-        echo ""
-        return
-    fi
-
-    echo "  Found ${#results[@]} match(es):"
-    echo ""
-    local shown=0
-    for line in "${results[@]}"; do
-        ((shown >= 50)) && break
-        local size name
-        size=$(echo "$line" | awk '{print $1}')
-        name=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""}')
-        printf "    %s  %s\n" "$(human_size "$size")" "$name"
-        ((shown++))
-    done
-    if [[ ${#results[@]} -gt 50 ]]; then
-        echo "  ... and $((${#results[@]} - 50)) more matches"
-    fi
-    echo ""
+    CURRENT_PATH=""
+    cmd_find "$1"
 }
 
 download_folder() {
@@ -266,106 +418,40 @@ show_usage() {
 Usage: $(basename "$0") [command] [args]
 
 Commands:
-  list                          List top-level folders in the bucket
-  browse <folder>               Browse a folder (one-shot)
-  browse -i                     Interactive folder browser (navigate with numbers)
-  search <pattern>              Search for files by name
-  download-folder <folder>      Download an entire folder
-  download-file <path>          Download a single file
-  download-all                  Download everything
-  interactive                   Interactive menu (default)
+  shell                       Interactive filesystem shell (default)
+  list                        List top-level folders
+  browse <folder>             Browse a folder (one-shot)
+  search <pattern>            Search for files by name
+  download-folder <folder>    Download an entire folder
+  download-file <path>        Download a single file
+  download-all                Download everything
 
 Examples:
+  $(basename "$0")                          # start interactive shell
   $(basename "$0") list
   $(basename "$0") browse hamzilla-photos
-  $(basename "$0") browse -i
   $(basename "$0") search ".jpg"
   $(basename "$0") download-folder hamzilla-photos/2024
-  $(basename "$0") download-file hamzilla-photos/2024/vacation/photo1.jpg
+  $(basename "$0") download-file hamzilla-photos/2024/photo.jpg
 EOF
-}
-
-interactive_menu() {
-    while true; do
-        echo ""
-        echo "╔══════════════════════════════════╗"
-        echo "║   B2 Photo Restore Tool          ║"
-        echo "╠══════════════════════════════════╣"
-        echo "║  1) List folders                 ║"
-        echo "║  2) Browse (one-shot)            ║"
-        echo "║  3) Browse (interactive)         ║"
-        echo "║  4) Search for files             ║"
-        echo "║  5) Download a folder            ║"
-        echo "║  6) Download a file              ║"
-        echo "║  7) Download everything          ║"
-        echo "║  8) Change restore directory     ║"
-        echo "║  q) Quit                         ║"
-        echo "╚══════════════════════════════════╝"
-        echo ""
-        echo "Restore directory: ${RESTORE_DIR}"
-        echo ""
-        read -rp "Choice: " choice
-
-        case "$choice" in
-            1) list_top_level ;;
-            2)
-                read -rp "Folder name: " folder
-                browse_folder "$folder"
-                ;;
-            3)
-                read -rp "Start folder (empty for root): " folder
-                browse_interactive "$folder"
-                ;;
-            4)
-                read -rp "Search pattern: " pattern
-                search_files "$pattern"
-                ;;
-            5)
-                read -rp "Folder to download: " folder
-                download_folder "$folder"
-                ;;
-            6)
-                read -rp "File path (e.g. hamzilla-photos/2024/photo.jpg): " filepath
-                download_file "$filepath"
-                ;;
-            7)
-                read -rp "Download ALL files? This may take a while. [y/N] " confirm
-                [[ "$confirm" =~ ^[Yy]$ ]] && download_all
-                ;;
-            8)
-                read -rp "New restore directory: " newdir
-                RESTORE_DIR="$newdir"
-                info "Restore directory set to: ${RESTORE_DIR}"
-                ;;
-            q|Q) echo "Bye."; exit 0 ;;
-            *) error "Invalid choice." ;;
-        esac
-    done
 }
 
 # --- Main ---
 check_rclone
 
 if [[ $# -eq 0 ]]; then
-    interactive_menu
+    shell
     exit 0
 fi
 
 case "${1:-}" in
+    shell)          shell ;;
     list)           list_top_level ;;
-    browse)
-        shift
-        if [[ "${1:-}" == "-i" ]]; then
-            browse_interactive ""
-        else
-            browse_folder "${1:?Usage: $0 browse <folder> | $0 browse -i}"
-        fi
-        ;;
+    browse)         shift; browse_folder "${1:?Usage: $0 browse <folder>}" ;;
     search)         shift; search_files "${1:?Usage: $0 search <pattern>}" ;;
     download-folder) shift; download_folder "${1:?Usage: $0 download-folder <folder>}" ;;
     download-file)  shift; download_file "${1:?Usage: $0 download-file <path>}" ;;
     download-all)   download_all ;;
-    interactive)    interactive_menu ;;
     -h|--help)      show_usage ;;
     *)              error "Unknown command: $1"; show_usage; exit 1 ;;
 esac
